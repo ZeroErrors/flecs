@@ -546,6 +546,76 @@ bool flecs_rest_reply_tables(
 }
 
 static
+void flecs_rest_reply_table_data_append(
+    ecs_world_t *world,
+    ecs_strbuf_t *reply,
+    const ecs_table_t *table)
+{
+    int32_t row_index, row_count = ecs_table_count(table);
+    int32_t type_index, type_count = table->type.count;
+
+    // ecs_entity_t *entities = ecs_storage_first(&table->data.entities);
+
+    ecs_strbuf_list_push(reply, "[", ",");
+    for (row_index = 0; row_index < row_count; row_index++) {
+        ecs_strbuf_list_next(reply);
+        ecs_strbuf_list_push(reply, "[", ",");
+        for (type_index = 0; type_index < type_count; type_index++) {
+            int32_t storage_index = ecs_table_type_to_storage_index(table, type_index);
+            if (storage_index == -1) {
+                ecs_strbuf_list_appendstr(reply, "null");
+                continue;
+            }
+
+            ecs_type_info_t *ti = table->type_info[storage_index];
+            ecs_entity_t type = ti->component;
+            if (!ecs_has(world, type, EcsComponent)) {
+                ecs_strbuf_list_appendstr(reply, "undefined");
+                continue;
+            }
+
+            if (!ecs_has(world, type, EcsMetaTypeSerialized)) {
+                ecs_strbuf_list_appendstr(reply, "undefined");
+                continue;
+            }
+
+            ecs_column_t *column = &table->data.columns[storage_index];
+            void* ptr = ecs_storage_get(column, ti->size, row_index);
+            
+            ecs_strbuf_list_next(reply);
+            ecs_array_to_json_buf(world, type, ptr, 0, reply);
+        }
+        // TODO: Print tags or other info not stored in the columns?
+        ecs_strbuf_list_pop(reply, "]");
+    }
+    ecs_strbuf_list_pop(reply, "]");
+}
+
+static
+bool flecs_rest_reply_table_data(
+    ecs_world_t *world,
+    const ecs_http_request_t* req,
+    ecs_http_reply_t *reply)
+{
+    int32_t table_id = atoi(&req->path[11]);
+    ecs_dbg_2("rest: request table data '%d'", table_id);
+
+    ecs_sparse_t *tables = &world->store.tables;
+    int32_t count = flecs_sparse_count(tables);
+    if (table_id < 0 || table_id >= count) {
+        ecs_dbg_2("rest: table '%d' not found", table_id);
+        flecs_reply_error(reply, "table '%d' not found", table_id);
+        reply->code = 404;
+        return true;
+    }
+
+    ecs_table_t *table = flecs_sparse_get_dense(tables, ecs_table_t, table_id);
+    flecs_rest_reply_table_data_append(world, &reply->body, table);
+
+    return true;
+}
+
+static
 void flecs_rest_reply_id_append(
     ecs_world_t *world,
     ecs_strbuf_t *reply,
@@ -631,6 +701,10 @@ bool flecs_rest_reply(
         /* Tables endpoint */
         } else if (!ecs_os_strncmp(req->path, "tables", 6)) {
             return flecs_rest_reply_tables(world, req, reply);
+
+        /* Tables endpoint */
+        } else if (!ecs_os_strncmp(req->path, "table_data/", 11)) {
+            return flecs_rest_reply_table_data(world, req, reply);
 
         /* Ids endpoint */
         } else if (!ecs_os_strncmp(req->path, "ids", 3)) {
